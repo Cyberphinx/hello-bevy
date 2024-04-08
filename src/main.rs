@@ -1,6 +1,4 @@
-use std::f32::consts::PI;
-
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::FloatOrd};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
 fn main() {
@@ -8,9 +6,13 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .register_type::<Tower>()
-        .add_systems(Startup, (spawn_basic_scene, spawn_camera, spawn_light, asset_loading))
+        .add_systems(
+            Startup,
+            (spawn_basic_scene, spawn_camera, spawn_light, asset_loading),
+        )
         .add_systems(Update, tower_shooting)
         .add_systems(Update, bullet_despawn)
+        .add_systems(Update, (move_bullets, move_targets))
         .run();
 }
 
@@ -36,9 +38,11 @@ fn spawn_camera(mut commands: Commands) {
         .insert(Name::new("Camera"));
 }
 
-#[derive(Component, Reflect)]
+#[derive(Reflect, Component, Default)]
+#[reflect(Component)]
 pub struct Tower {
     shooting_timer: Timer,
+    bullet_offset: Vec3,
 }
 
 #[derive(Reflect, Component, Default)]
@@ -69,32 +73,101 @@ fn spawn_basic_scene(
         })
         .insert(Tower {
             shooting_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+            ..default()
         })
         .insert(Name::new("Tower"));
+
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4))),
+            material: materials.add(Color::PINK),
+            transform: Transform::from_xyz(-2.0, 0.2, 1.5),
+            ..default()
+        })
+        .insert(Target { speed: 0.3 })
+        .insert(Health { value: 3.0 })
+        .insert(Name::new("Target1"));
+
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4))),
+            material: materials.add(Color::PURPLE),
+            transform: Transform::from_xyz(-0.4, 0.2, 1.5),
+            ..default()
+        })
+        .insert(Target { speed: 0.3 })
+        .insert(Health { value: 3.0 })
+        .insert(Name::new("Target2"));
+}
+
+#[derive(Reflect, Component, Default)]
+#[reflect(Component)]
+pub struct Target {
+    speed: f32,
+}
+
+fn move_targets(mut targets: Query<(&Target, &mut Transform)>, time: Res<Time>) {
+    for (target, mut transform) in &mut targets {
+        transform.translation.x += target.speed * time.delta_seconds();
+    }
+}
+
+#[derive(Reflect, Component, Default)]
+#[reflect(Component)]
+pub struct Bullet {
+    direction: Vec3,
+    speed: f32,
+}
+
+fn move_bullets(mut bullets: Query<(&Bullet, &mut Transform)>, time: Res<Time>) {
+    for (bullet, mut transform) in &mut bullets {
+        transform.translation += bullet.direction.normalize() * bullet.speed * time.delta_seconds();
+    }
+}
+
+#[derive(Reflect, Component, Default)]
+#[reflect(Component)]
+pub struct Health {
+    value: f32,
 }
 
 fn tower_shooting(
     mut commands: Commands,
-    mut towers: Query<&mut Tower>,
+    mut towers: Query<(Entity, &mut Tower, &GlobalTransform)>,
+    targets: Query<&GlobalTransform, With<Target>>,
     bullet_assets: Res<GameAssets>,
     time: Res<Time>,
 ) {
-    for mut tower in &mut towers {
+    for (tower_ent, mut tower, transform) in &mut towers {
         tower.shooting_timer.tick(time.delta());
         if tower.shooting_timer.just_finished() {
-            let spawn_transform =
-                Transform::from_xyz(0.0, 0.7, 0.6).with_rotation(Quat::from_rotation_y(-PI / 2.0));
+            let bullet_spawn = transform.translation() + tower.bullet_offset;
 
-            commands
-                .spawn(SceneBundle{
-                    scene: bullet_assets.bullet_scene.clone(),
-                    transform: spawn_transform,
-                    ..Default::default()
+            let direction = targets
+                .iter()
+                .min_by_key(|target_transform| {
+                    FloatOrd(Vec3::distance(target_transform.translation(), bullet_spawn))
                 })
-                .insert(Lifetime {
-                    timer: Timer::from_seconds(0.5, TimerMode::Once),
-                })
-                .insert(Name::new("Bullet"));
+                .map(|closet_target| closet_target.translation() - bullet_spawn);
+
+            if let Some(direction) = direction {
+                commands.entity(tower_ent).with_children(|commands| {
+                    commands
+                        .spawn(SceneBundle {
+                            scene: bullet_assets.bullet_scene.clone(),
+                            transform: Transform::from_translation(tower.bullet_offset),
+                            ..Default::default()
+                        })
+                        .insert(Lifetime {
+                            timer: Timer::from_seconds(0.5, TimerMode::Once),
+                        })
+                        .insert(Bullet {
+                            direction,
+                            speed: 2.5,
+                        })
+                        .insert(Name::new("Bullet"));
+                });
+            }
         }
     }
 }
@@ -106,7 +179,7 @@ fn bullet_despawn(
 ) {
     for (entity, mut lifetime) in &mut bullets {
         lifetime.timer.tick(time.delta());
-        if lifetime.timer.just_finished(){
+        if lifetime.timer.just_finished() {
             // always use despawn_recursive, since it will despawn all children of the entity
             commands.entity(entity).despawn_recursive();
         }
@@ -115,15 +188,15 @@ fn bullet_despawn(
 
 #[derive(Resource)]
 pub struct GameAssets {
-    bullet_scene: Handle<Scene>
+    bullet_scene: Handle<Scene>,
 }
 
-fn asset_loading(mut commands: Commands, assets: Res<AssetServer>){
+fn asset_loading(mut commands: Commands, assets: Res<AssetServer>) {
     let bullet: Handle<Scene> = assets.load("Bullet.glb#Scene0");
-    commands.insert_resource(GameAssets{ bullet_scene: bullet });
+    commands.insert_resource(GameAssets {
+        bullet_scene: bullet,
+    });
 }
-
-
 
 // #[derive(Component, Reflect)]
 // pub struct Ferris;

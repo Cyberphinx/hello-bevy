@@ -1,18 +1,26 @@
 use bevy::{prelude::*, utils::FloatOrd};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
+mod bullet;
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        // Inspector setup
         .add_plugins(WorldInspectorPlugin::new())
         .register_type::<Tower>()
+        .register_type::<Lifetime>()
+        .register_type::<Target>()
+        .register_type::<Bullet>()
+        .register_type::<Health>()
+        // Our systems
         .add_systems(
             Startup,
             (spawn_basic_scene, spawn_camera, spawn_light, asset_loading),
         )
         .add_systems(Update, tower_shooting)
-        .add_systems(Update, bullet_despawn)
         .add_systems(Update, (move_bullets, move_targets))
+        .add_systems(Update, (bullet_collision, bullet_despawn, target_death))
         .run();
 }
 
@@ -125,10 +133,49 @@ fn move_bullets(mut bullets: Query<(&Bullet, &mut Transform)>, time: Res<Time>) 
     }
 }
 
+fn bullet_despawn(
+    mut commands: Commands,
+    mut bullets: Query<(Entity, &mut Lifetime)>,
+    time: Res<Time>,
+) {
+    for (entity, mut lifetime) in &mut bullets {
+        lifetime.timer.tick(time.delta());
+        if lifetime.timer.just_finished() {
+            // always use despawn_recursive, since it will despawn all children of the entity
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+/// This is a basic collision logic, for more advanced collision logic, use Heron
+fn bullet_collision(
+    mut commands: Commands,
+    bullets: Query<(Entity, &GlobalTransform), With<Bullet>>,
+    mut targets: Query<(&mut Health, &Transform), With<Target>>,
+) {
+    for (bullet, bullet_transform) in &bullets {
+        for (mut health, target_transform) in &mut targets {
+            if Vec3::distance(bullet_transform.translation(), target_transform.translation) < 0.2 {
+                commands.entity(bullet).despawn_recursive();
+                health.value -= 1.0;
+                break;
+            }
+        }
+    }
+}
+
 #[derive(Reflect, Component, Default)]
 #[reflect(Component)]
 pub struct Health {
     value: f32,
+}
+
+fn target_death(mut commands: Commands, targets: Query<(Entity, &Health)>) {
+    for (ent, health) in &targets {
+        if health.value <= 0.0 {
+            commands.entity(ent).despawn_recursive();
+        }
+    }
 }
 
 fn tower_shooting(
@@ -159,7 +206,7 @@ fn tower_shooting(
                             ..Default::default()
                         })
                         .insert(Lifetime {
-                            timer: Timer::from_seconds(0.5, TimerMode::Once),
+                            timer: Timer::from_seconds(1000.5, TimerMode::Once),
                         })
                         .insert(Bullet {
                             direction,
@@ -168,20 +215,6 @@ fn tower_shooting(
                         .insert(Name::new("Bullet"));
                 });
             }
-        }
-    }
-}
-
-fn bullet_despawn(
-    mut commands: Commands,
-    mut bullets: Query<(Entity, &mut Lifetime)>,
-    time: Res<Time>,
-) {
-    for (entity, mut lifetime) in &mut bullets {
-        lifetime.timer.tick(time.delta());
-        if lifetime.timer.just_finished() {
-            // always use despawn_recursive, since it will despawn all children of the entity
-            commands.entity(entity).despawn_recursive();
         }
     }
 }

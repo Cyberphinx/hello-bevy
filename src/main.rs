@@ -1,9 +1,13 @@
-use bevy::{prelude::*, utils::FloatOrd};
+use bevy::{pbr::NotShadowCaster, prelude::*, utils::FloatOrd};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_mod_picking::{highlight::Highlight, selection::PickSelection, *};
 
 #[derive(Resource)]
 pub struct GameAssets {
-    bullet_scene: Handle<Scene>,
+    tower_base_scene: Handle<Scene>,
+    tomato_tower_scene: Handle<Scene>,
+    tomato_scene: Handle<Scene>,
+    target_scene: Handle<Scene>,
 }
 
 mod bullet;
@@ -19,15 +23,25 @@ fn main() {
         .add_plugins(DefaultPlugins)
         // Inspector setup
         .add_plugins(WorldInspectorPlugin::new())
+        // Mod Picking
+        .add_plugins(DefaultPickingPlugins)
         // Our systems
         .add_plugins(TowerPlugin)
         .add_plugins(TargetPlugin)
         .add_plugins(BulletPlugin)
-        .add_systems(
-            Startup,
-            (spawn_basic_scene, spawn_camera, spawn_light, asset_loading),
-        )
+        .add_systems(PreStartup, asset_loading)
+        .add_systems(Startup, (spawn_basic_scene, spawn_camera, spawn_light))
+        .add_systems(Update, camera_controls)
         .run();
+}
+
+fn asset_loading(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(GameAssets {
+        tower_base_scene: assets.load("TowerBase.glb#Scene0"),
+        tomato_tower_scene: assets.load("TomatoTower.glb#Scene0"),
+        tomato_scene: assets.load("Tomato.glb#Scene0"),
+        target_scene: assets.load("Target.glb#Scene0"),
+    });
 }
 
 fn spawn_light(mut commands: Commands) {
@@ -43,6 +57,77 @@ fn spawn_light(mut commands: Commands) {
     commands.spawn(light).insert(Name::new("Light"));
 }
 
+fn spawn_basic_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    game_assets: Res<GameAssets>,
+) {
+    // The ground plane
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Mesh::from(Plane3d::default().mesh().size(15.0, 15.0))),
+            material: materials.add(Color::rgb(0.3, 0.5, 0.3)),
+            ..default()
+        })
+        .insert(Name::new("Ground"));
+
+    let default_collider_color = materials.add(Color::rgba(0.3, 0.5, 0.3, 0.3));
+    let hovered_collider_color = materials.add(Color::rgba(0.2, 0.7, 0.3, 0.9));
+    let selected_collider_color = materials.add(Color::rgba(0.3, 0.9, 0.3, 0.9));
+
+    // Tower base slot
+    commands
+        .spawn(SpatialBundle::from_transform(Transform::from_xyz(
+            0.0, 0.8, 0.0,
+        )))
+        .insert(Name::new("Tower_Base"))
+        .insert(meshes.add(Capsule3d::default()))
+        .insert(Highlight {
+            hovered: Some(highlight::HighlightKind::Fixed(
+                hovered_collider_color.clone(),
+            )),
+            pressed: Some(highlight::HighlightKind::Fixed(
+                selected_collider_color.clone(),
+            )),
+            selected: Some(highlight::HighlightKind::Fixed(
+                selected_collider_color.clone(),
+            )),
+        })
+        .insert(default_collider_color)
+        .insert(NotShadowCaster)
+        .insert(PickableBundle::default())
+        .with_children(|commands| {
+            commands.spawn(SceneBundle {
+                scene: game_assets.tower_base_scene.clone(),
+                transform: Transform::from_xyz(0.0, -0.8, 0.0),
+                ..default()
+            });
+        });
+
+    // Target 1
+    commands
+        .spawn(SceneBundle {
+            scene: game_assets.target_scene.clone(),
+            transform: Transform::from_xyz(-2.0, 0.2, 1.5),
+            ..default()
+        })
+        .insert(Target { speed: 0.3 })
+        .insert(Health { value: 3.0 })
+        .insert(Name::new("Target1"));
+
+    // Target 2
+    commands
+        .spawn(SceneBundle {
+            scene: game_assets.target_scene.clone(),
+            transform: Transform::from_xyz(-0.4, 0.2, 1.5),
+            ..default()
+        })
+        .insert(Target { speed: 0.3 })
+        .insert(Health { value: 3.0 })
+        .insert(Name::new("Target2"));
+}
+
 fn spawn_camera(mut commands: Commands) {
     commands
         .spawn(Camera3dBundle {
@@ -52,77 +137,37 @@ fn spawn_camera(mut commands: Commands) {
         .insert(Name::new("Camera"));
 }
 
-fn spawn_basic_scene(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+fn camera_controls(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut camera_query: Query<&mut Transform, With<Camera3d>>,
+    time: Res<Time>,
 ) {
-    commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(Plane3d::default().mesh().size(15.0, 15.0))),
-            material: materials.add(Color::rgb(0.3, 0.5, 0.3)),
-            ..default()
-        })
-        .insert(Name::new("Ground"));
+    let mut camera = camera_query.single_mut();
 
-    commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(Cuboid::new(0.5, 1.0, 0.5))),
-            material: materials.add(Color::GRAY),
-            transform: Transform::from_xyz(0.0, 0.25, 0.0),
-            ..default()
-        })
-        .insert(Tower {
-            shooting_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
-            ..default()
-        })
-        .insert(Name::new("Tower"));
+    // Calculate the forward direction vector without the y component
+    let forward = Vec3::new(camera.forward().x, 0.0, camera.forward().z).normalize();
+    // Calculate the left direction vector without the y component
+    let left = Vec3::new(camera.left().x, 0.0, camera.left().z).normalize();
 
-    commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4))),
-            material: materials.add(Color::PINK),
-            transform: Transform::from_xyz(-2.0, 0.2, 1.5),
-            ..default()
-        })
-        .insert(Target { speed: 0.3 })
-        .insert(Health { value: 3.0 })
-        .insert(Name::new("Target1"));
+    let speed = 3.0;
+    let rotate_speed = 0.3;
 
-    commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4))),
-            material: materials.add(Color::PURPLE),
-            transform: Transform::from_xyz(-0.4, 0.2, 1.5),
-            ..default()
-        })
-        .insert(Target { speed: 0.3 })
-        .insert(Health { value: 3.0 })
-        .insert(Name::new("Target2"));
+    if keyboard.pressed(KeyCode::KeyW) {
+        camera.translation += forward * time.delta_seconds() * speed;
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        camera.translation -= forward * time.delta_seconds() * speed;
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        camera.translation += left * time.delta_seconds() * speed;
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        camera.translation -= left * time.delta_seconds() * speed;
+    }
+    if keyboard.pressed(KeyCode::KeyQ) {
+        camera.rotate_axis(Vec3::Y, rotate_speed * time.delta_seconds());
+    }
+    if keyboard.pressed(KeyCode::KeyE) {
+        camera.rotate_axis(Vec3::Y, -rotate_speed * time.delta_seconds());
+    }
 }
-
-fn asset_loading(mut commands: Commands, assets: Res<AssetServer>) {
-    let bullet: Handle<Scene> = assets.load("Bullet.glb#Scene0");
-    commands.insert_resource(GameAssets {
-        bullet_scene: bullet,
-    });
-}
-
-// #[derive(Component, Reflect)]
-// pub struct Ferris;
-
-// fn spawn_gltf(mut commands: Commands, asset_server: Res<AssetServer>) {
-//     // note that we have to include the `Scene0` label
-//     let my_gltf = asset_server.load("ferris3d.glb#Scene0");
-
-//     // to position our 3d model, simply use the Transform
-//     // in the SceneBundle
-//     commands
-//         .spawn(SceneBundle {
-//             scene: my_gltf,
-//             transform: Transform::from_xyz(1.0, 0.0, 0.0),
-//             ..Default::default()
-//         })
-//         .insert(Ferris)
-//         .insert(Name::new("Ferris"));
-// }
